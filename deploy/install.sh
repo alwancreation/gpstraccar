@@ -89,9 +89,20 @@ chmod 600 "$CONF"
 # Code
 # ---------------------------------------------------------------------------------------------------------------------
 echo "▶ Installation du code dans $TRACCAR_DIR..."
-WAS_RUNNING=0
-systemctl is-active --quiet traccar && WAS_RUNNING=1
-[ "$WAS_RUNNING" = 1 ] && systemctl stop traccar
+# Arrêt systématique (y compris un service qui redémarre en boucle après un échec).
+systemctl stop traccar 2>/dev/null || true
+
+# Verrou Liquibase resté posé : si Traccar a été arrêté pendant la création ou la mise à jour des tables
+# (redémarrage, déploiement, coupure), la ligne de DATABASECHANGELOGLOCK reste « LOCKED=1 » et tous les démarrages
+# suivants échouent avec « Could not acquire change log lock ». Traccar étant arrêté et seul à utiliser Liquibase
+# dans cette base, on peut libérer le verrou sans risque.
+if mysql -N -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='DATABASECHANGELOGLOCK'" 2>/dev/null | grep -q 1; then
+  LOCKS="$(mysql -N -e "SELECT COUNT(*) FROM \`${DB_NAME}\`.DATABASECHANGELOGLOCK WHERE LOCKED <> 0" 2>/dev/null || echo 0)"
+  if [ "${LOCKS:-0}" -gt 0 ] 2>/dev/null; then
+    echo "  Verrou Liquibase resté posé (démarrage précédent interrompu) : libération"
+    mysql -e "UPDATE \`${DB_NAME}\`.DATABASECHANGELOGLOCK SET LOCKED = 0, LOCKGRANTED = NULL, LOCKEDBY = NULL" || echo "  ⚠ impossible de libérer le verrou"
+  fi
+fi
 install -m 644 "$STAGE/tracker-server.jar" "$TRACCAR_DIR/tracker-server.jar"
 for dir in lib jre schema templates web; do
   rsync -a --delete "$STAGE/$dir/" "$TRACCAR_DIR/$dir/"

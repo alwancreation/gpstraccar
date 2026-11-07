@@ -66,28 +66,32 @@ jobs:
           jlink --add-modules java.se,jdk.charsets,jdk.crypto.ec,jdk.net,jdk.unsupported \
             --strip-debug --no-header-files --no-man-pages --compress=2 --output out/jre
           tar -czf traccar-package.tar.gz -C out .
+          cp deploy/install.sh install.sh
           ls -lh traccar-package.tar.gz
 
-      - name: Upload and install on server
-        env:
-          SERVER_IP: ${{ secrets.SERVER_IP }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          SSH_SERVER_KEY: ${{ secrets.SSH_SERVER_KEY }}
-        run: |
-          set -e
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_SERVER_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          PORT="${SERVER_PORT:-22}"
-          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30"
-          REMOTE_DIR="/tmp/traccar-deploy-${GITHUB_RUN_ID}"
+      # Mêmes actions et mêmes secrets que le dépôt gpstracker : appleboy accepte la clé quel que soit son format de collage
+      # (fins de ligne Windows, etc.), là où « ssh -i » échouait avec « Load key: error in libcrypto ».
+      - name: Upload package to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_SERVER_KEY }}
+          source: "traccar-package.tar.gz,install.sh"
+          target: /tmp/traccar-deploy-${{ github.run_id }}
 
-          ssh $SSH_OPTS -p "$PORT" "$SERVER_USER@$SERVER_IP" "mkdir -p $REMOTE_DIR"
-          scp $SSH_OPTS -P "$PORT" traccar-package.tar.gz deploy/install.sh "$SERVER_USER@$SERVER_IP:$REMOTE_DIR/"
-          ssh $SSH_OPTS -p "$PORT" "$SERVER_USER@$SERVER_IP" \
-            "sudo bash $REMOTE_DIR/install.sh $REMOTE_DIR/traccar-package.tar.gz; status=\$?; rm -rf $REMOTE_DIR; exit \$status"
-
-      - name: Clean up SSH key
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
+      - name: Install on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_SERVER_KEY }}
+          command_timeout: 30m
+          script: |
+            DIR="/tmp/traccar-deploy-${{ github.run_id }}"
+            sudo bash "$DIR/install.sh" "$DIR/traccar-package.tar.gz"
+            status=$?
+            rm -rf "$DIR"
+            exit $status
